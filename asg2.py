@@ -29,7 +29,7 @@ class Message(object):
 	return self.__str__()
 
     @staticmethod
-    def reconstructFromString(str):
+    def build_string(str):
 	keyWords = str.strip().split()
         source_id = int(keyWords[0])
         snap_id = keyWords[1]
@@ -63,16 +63,16 @@ class Site(object):
     	self.snapID_table = {}
 	self.done_processes = set()
 
-    def openListeningSocket(self, IP, port):
+    def open_receive_sock(self, IP, port):
 	self.listeningSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.listeningSocket.bind( (IP, port) )
         self.listeningSocket.setblocking(0) 
         self.listeningSocket.listen(1)
 
-    def addOutgoingChannel(self, dest):
+    def addOutConnect(self, dest):
 	self.outgoing_channels[dest] = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     
-    def openOutgoingChannels(self):
+    def openOutConnections(self):
 	for dest, sock in self.outgoing_channels.iteritems():
 	    while True:
 		try: 
@@ -81,10 +81,10 @@ class Site(object):
 		except Exception:
 		    continue
 
-    def addIncomingChannel(self, source_id):
+    def addInConnect(self, source_id):
 	self.SnapIDTableLastEntryTemplate[source_id] = [False, 0]
 
-    def openIncomingChannels(self):
+    def openInConnections(self):
 	while len(self.incoming_channels) != len(self.SnapIDTableLastEntryTemplate):
 	    try:
 	        con, _ = self.listeningSocket.accept()
@@ -94,29 +94,29 @@ class Site(object):
 		continue
 		
     def execute(self, command):
-	self.checkIncomingMsgs()
+	self.check_message()
         keyWords = command.split()
         if "send" == keyWords[0]:
 	    dest = int(keyWords[1])
 	    amount = int(keyWords[2])
-	    self.sendMoney(dest, amount)
+	    self.transfer_dosh(dest, amount)
 	elif "snapshot" == keyWords[0]:
-	    self.startSnapshot()
+	    self.take_snap()
 	elif "sleep" == keyWords[0]:
 	    time = float(keyWords[1])
 	    self.sleep(time)
 	else:
 	    print "command not found: " + command
 	    exit(1)
-	self.checkIncomingMsgs()
+	self.check_message()
 
-    def checkIncomingMsgs(self):
+    def check_message(self):
 	BUF_SIZE = 1024
 	for con in self.incoming_channels:
 	    try:
 		msgs = con.recv(BUF_SIZE)
 		for msg in Message.split(msgs):
-		    msg = Message.reconstructFromString(msg.strip())
+		    msg = Message.build_string(msg.strip())
 		    if msg.type == Message.MARKER_TYPE:
 			if msg.snap_id not in self.snapID_table: 
 			    counter = 1
@@ -124,14 +124,14 @@ class Site(object):
 			    incoming_channels_states = copy.deepcopy(self.SnapIDTableLastEntryTemplate)
 			    self.snapID_table[msg.snap_id] = [counter, site_state, incoming_channels_states]
 			    self.snapID_table[msg.snap_id][2][msg.source_id][0] = True
-			    self.sendMarkers(msg.snap_id)
+			    self.send_mark(msg.snap_id)
 			    if self.snapID_table[msg.snap_id][0] == len(self.incoming_channels): 
-				self.outputLocalSnapshotAt(msg.snap_id)
+				self.printSnap(msg.snap_id)
 			else: 
 			    self.snapID_table[msg.snap_id][0] += 1 
 			    self.snapID_table[msg.snap_id][2][msg.source_id][0] = True 
 			    if self.snapID_table[msg.snap_id][0] == len(self.incoming_channels): 
-				self.outputLocalSnapshotAt(msg.snap_id)
+				self.printSnap(msg.snap_id)
 		    elif msg.type == Message.MONEY_TRANSFER_TYPE: 
 			self.balance += msg.amount 
 			for _, v in self.snapID_table.iteritems():
@@ -143,7 +143,7 @@ class Site(object):
 			done_process = msg.amount
 			if done_process not in self.done_processes:
 			    self.done_processes.add(done_process)
-			    self.sendDone(done_process)
+			    self.send_done_signal(done_process)
 		    else:
 			print "ERROR: message type not found"
 			print msg
@@ -151,7 +151,7 @@ class Site(object):
 	    except socket.error, e:
 		continue
 
-    def outputLocalSnapshotAt(self, snap_id):
+    def printSnap(self, snap_id):
 	output = snap_id + ": "
 	output += str(self.snapID_table[snap_id][1]) + " "
         l = self.snapID_table[snap_id][2].items()
@@ -162,45 +162,45 @@ class Site(object):
 	print output
         del self.snapID_table[snap_id]
 
-    def sendMoney(self, dest, amount):
+    def transfer_dosh(self, dest, amount):
 	self.balance -= amount
         msg = Message(self.id, None, amount, Message.MONEY_TRANSFER_TYPE)
         self.outgoing_channels[dest].send(str(msg))
 
-    def sendMarkers(self, snap_id):
+    def send_mark(self, snap_id):
 	msg = Message(self.id, snap_id, None, Message.MARKER_TYPE)
 	for dest, sock in self.outgoing_channels.iteritems():
 	    sock.send(str(msg))
 
-    def sendDone(self, done_process_id):
+    def send_done_signal(self, done_process_id):
 	msg = Message(self.id, None, done_process_id, Message.DONE_TYPE)
 	for dest, sock in self.outgoing_channels.iteritems():
 	    sock.send(str(msg))
     
-    def startSnapshot(self):
+    def take_snap(self):
 	self.snap_count += 1
         counter = 0
         snap_id = str(self.id) + "." + str(self.snap_count)
         site_state = self.balance 
         incoming_channels_states = copy.deepcopy(self.SnapIDTableLastEntryTemplate)
         self.snapID_table[snap_id] = [counter, site_state, incoming_channels_states]
-        self.sendMarkers(snap_id)
+        self.send_mark(snap_id)
 
     def sleep(self, amount):
 	count = (amount * 1000)/200
 	i = 0
 	while(i < count):
 	    time.sleep(0.2)
-	    self.checkIncomingMsgs()
+	    self.check_message()
 	    i += 1	
 
-    def checkForDone(self):
-	return (self.getUnfinishedSnap() == 0) and (len(self.done_processes) == len(self.addr_book))
+    def done_status(self):
+	return (self.get_unpolished() == 0) and (len(self.done_processes) == len(self.addr_book))
 
-    def getUnfinishedSnap(self):
+    def get_unpolished(self):
 	return len(self.snapID_table)
 
-    def TearDown(self):
+    def destruct(self):
 	for _, sock in self.outgoing_channels.iteritems():
 	    sock.close()
 	    for sock in self.incoming_channels:
@@ -220,7 +220,7 @@ def main():
     setup_f = sys.argv[2]
     command_f = sys.argv[3]
     setup(s, setup_f)
-    execute_commands(s, command_f)
+    do_command(s, command_f)
 
 
 #parse setup file-->sets up sites
@@ -236,30 +236,30 @@ def setup(s, setup):
 	        port = int(port)
 	        s.addr_book.append( (IP, port) )
 	        if process == s.id:
-		    s.openListeningSocket( IP, port ) 
+		    s.open_receive_sock( IP, port ) 
 	    else:
 	        source, dest = line.strip().split()
 	        source = int(source)
 	        dest = int(dest)
 	        if source == s.id: #send
-		    s.addOutgoingChannel(dest)
+		    s.addOutConnect(dest)
 		if dest == s.id: #receiver
-		    s.addIncomingChannel(source)
-    s.openOutgoingChannels()
-    s.openIncomingChannels()
+		    s.addInConnect(source)
+    s.openOutConnections()
+    s.openInConnections()
 
 #reads command file-->use commands
-def execute_commands(s, c_file):
+def do_command(s, c_file):
     with open(c_file, 'r') as f:
 	for command in f.readlines():
 	    command = command.lower().strip()
 	    s.execute(command)
     s.done_processes.add(s.id)
-    s.sendDone(s.id)
+    s.send_done_signal(s.id)
     while True:
-	if s.checkForDone() == True:
-	    s.TearDown()
-	s.checkIncomingMsgs()
+	if s.done_status() == True:
+	    s.destruct()
+	s.check_message()
 
 if __name__ == "__main__":
     main()
